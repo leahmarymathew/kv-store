@@ -8,7 +8,16 @@
       "Bash(go build *)",
       "Bash(go test *)",
       "Bash(Start-Process *)",
-      "PowerShell(Start-Process -FilePath \".\\\\server.exe\" -ArgumentList \"-port\",\"7379\" -NoNewWindow -PassThru)"
+      "PowerShell(Start-Process -FilePath \".\\\\server.exe\" -ArgumentList \"-port\",\"7379\" -NoNewWindow -PassThru)",
+      "Bash(go vet *)",
+      "PowerShell(Stop-Process *)",
+      "Bash(.\\\\bench.exe *)",
+      "PowerShell(.\\\\bench.exe -clients 1 -requests 1000 -operation set)",
+      "PowerShell(Write-Host \"=== 10 clients, SET only ===\" ; .\\\\bench.exe -clients 10 -requests 10000 -operation set)",
+      "PowerShell(Write-Host \"=== 50 clients, mixed ===\" ; .\\\\bench.exe -clients 50 -requests 50000 -operation mixed)",
+      "PowerShell(Write-Host \"=== 100 clients, mixed ===\" ; .\\\\bench.exe -clients 100 -requests 100000 -operation mixed)",
+      "PowerShell(Write-Host \"=== 200 clients, GET heavy ===\" ; .\\\\bench.exe -clients 200 -requests 200000 -operation get)",
+      "PowerShell(go version *)"
     ]
   }
 }

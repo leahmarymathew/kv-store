@@ -1,28 +1,41 @@
 package server
 
 import (
+	"bufio"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/leahmarymathew/kv-store/internal/protocol"
 	"github.com/leahmarymathew/kv-store/internal/store"
 )
 
-func (srv *Server) handleConnection(conn net.Conn) {
+func handleConnection(ctx context.Context, conn net.Conn, s *store.Store, wg *sync.WaitGroup, sem chan struct{}, cfg DeadlineConfig) {
+	defer func() { <-sem }()
 	defer conn.Close()
-	defer srv.wg.Done()
+	defer wg.Done()
 
-	parser := protocol.NewParser(conn)
-	serializer := protocol.NewSerializer(conn)
+	bufReader := bufio.NewReaderSize(conn, 4096)
+	bufWriter := bufio.NewWriterSize(conn, 4096)
+
+	parser := protocol.NewParser(bufReader)
+	serializer := protocol.NewSerializer(bufWriter)
 
 	for {
+		conn.SetDeadline(time.Now().Add(cfg.IdleTimeout))
+
 		cmd, err := parser.Parse()
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				slog.Debug("connection timed out", "remote", conn.RemoteAddr())
+				return
+			}
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 				return
 			}
@@ -30,10 +43,26 @@ func (srv *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		resp := dispatch(cmd, srv.store)
+		resp := dispatch(cmd, s)
+
+		conn.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout))
 		if err := serializer.Write(resp); err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				slog.Debug("write timed out", "remote", conn.RemoteAddr())
+				return
+			}
 			slog.Error("write error", "remote", conn.RemoteAddr(), "err", err)
 			return
+		}
+		if err := bufWriter.Flush(); err != nil {
+			slog.Debug("flush error", "remote", conn.RemoteAddr(), "err", err)
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 	}
 }
