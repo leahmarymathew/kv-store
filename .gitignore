@@ -1,0 +1,5 @@
+*.test
+bench_results/
+*.log
+wal_data/
+*.exe

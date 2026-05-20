@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod *)",
+      "Bash(git init *)",
+      "Bash(go get *)",
+      "PowerShell(New-Item *)",
+      "Bash(go build *)",
+      "Bash(go test *)",
+      "Bash(Start-Process *)",
+      "PowerShell(Start-Process -FilePath \".\\\\server.exe\" -ArgumentList \"-port\",\"7379\" -NoNewWindow -PassThru)"
+    ]
+  }
+}
