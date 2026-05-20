@@ -7,28 +7,28 @@ import (
 )
 
 type Store struct {
-	mu   sync.RWMutex
-	data map[string][]byte
-	ttl  map[string]time.Time
+	mu     sync.RWMutex
+	data   map[string][]byte
+	ttlMgr *TTLManager
 }
 
 func NewStore() *Store {
 	return &Store{
-		data: make(map[string][]byte),
-		ttl:  make(map[string]time.Time),
+		data:   make(map[string][]byte),
+		ttlMgr: NewTTLManager(),
 	}
 }
 
 func (s *Store) Get(key string) ([]byte, bool) {
 	s.mu.RLock()
-	expiry, hasTTL := s.ttl[key]
-	if hasTTL && time.Now().After(expiry) {
+	if s.ttlMgr.IsExpired(key) {
 		s.mu.RUnlock()
 		s.mu.Lock()
-		// Double-check: another goroutine may have already cleaned up.
-		if exp, still := s.ttl[key]; still && time.Now().After(exp) {
+		// Double-check: another goroutine may have already cleaned up or
+		// replaced the key with a fresh Set() clearing the TTL.
+		if s.ttlMgr.IsExpired(key) {
 			delete(s.data, key)
-			delete(s.ttl, key)
+			s.ttlMgr.Delete(key)
 		}
 		s.mu.Unlock()
 		return nil, false
@@ -42,14 +42,14 @@ func (s *Store) Set(key string, value []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data[key] = value
-	delete(s.ttl, key)
+	s.ttlMgr.Delete(key)
 }
 
 func (s *Store) SetWithTTL(key string, value []byte, ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.data[key] = value
-	s.ttl[key] = time.Now().Add(ttl)
+	s.ttlMgr.Set(key, time.Now().Add(ttl))
 }
 
 func (s *Store) Delete(key string) bool {
@@ -57,7 +57,7 @@ func (s *Store) Delete(key string) bool {
 	defer s.mu.Unlock()
 	_, exists := s.data[key]
 	delete(s.data, key)
-	delete(s.ttl, key)
+	s.ttlMgr.Delete(key)
 	return exists
 }
 
@@ -70,10 +70,9 @@ func (s *Store) Len() int {
 func (s *Store) Keys() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	now := time.Now()
 	keys := make([]string, 0, len(s.data))
 	for k := range s.data {
-		if expiry, hasTTL := s.ttl[k]; hasTTL && now.After(expiry) {
+		if s.ttlMgr.IsExpired(k) {
 			continue
 		}
 		keys = append(keys, k)
@@ -89,15 +88,13 @@ func (s *Store) StartExpiryLoop(ctx context.Context, interval time.Duration) {
 			select {
 			case <-ctx.Done():
 				return
-			case now := <-ticker.C:
-				s.mu.Lock()
-				for k, expiry := range s.ttl {
-					if now.After(expiry) {
-						delete(s.data, k)
-						delete(s.ttl, k)
-					}
+			case <-ticker.C:
+				expired := s.ttlMgr.PopExpired()
+				for _, key := range expired {
+					s.mu.Lock()
+					delete(s.data, key)
+					s.mu.Unlock()
 				}
-				s.mu.Unlock()
 			}
 		}
 	}()

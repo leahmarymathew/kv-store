@@ -16,7 +16,7 @@ import (
 	"github.com/leahmarymathew/kv-store/internal/store"
 )
 
-func handleConnection(ctx context.Context, conn net.Conn, s *store.Store, wg *sync.WaitGroup, sem chan struct{}, cfg DeadlineConfig) {
+func handleConnection(ctx context.Context, conn net.Conn, s *store.WALStore, wg *sync.WaitGroup, sem chan struct{}, cfg DeadlineConfig) {
 	defer func() { <-sem }()
 	defer conn.Close()
 	defer wg.Done()
@@ -67,7 +67,7 @@ func handleConnection(ctx context.Context, conn net.Conn, s *store.Store, wg *sy
 	}
 }
 
-func dispatch(cmd *protocol.Command, s *store.Store) *protocol.Response {
+func dispatch(cmd *protocol.Command, s *store.WALStore) *protocol.Response {
 	switch cmd.Type {
 	case protocol.CmdGet:
 		val, ok := s.Get(string(cmd.Key))
@@ -77,11 +77,17 @@ func dispatch(cmd *protocol.Command, s *store.Store) *protocol.Response {
 		return protocol.OKResponse(val)
 
 	case protocol.CmdSet:
-		s.Set(string(cmd.Key), cmd.Value)
+		if err := s.Set(string(cmd.Key), cmd.Value); err != nil {
+			return protocol.ErrorResponse("write failed: " + err.Error())
+		}
 		return protocol.OKResponse(nil)
 
 	case protocol.CmdDelete:
-		if s.Delete(string(cmd.Key)) {
+		found, err := s.Delete(string(cmd.Key))
+		if err != nil {
+			return protocol.ErrorResponse("write failed: " + err.Error())
+		}
+		if found {
 			return protocol.OKResponse(nil)
 		}
 		return protocol.NotFoundResponse()
@@ -91,7 +97,9 @@ func dispatch(cmd *protocol.Command, s *store.Store) *protocol.Response {
 			return protocol.ErrorResponse(fmt.Sprintf("TTL value must be 8 bytes, got %d", len(cmd.Value)))
 		}
 		secs := int64(binary.BigEndian.Uint64(cmd.Value))
-		s.SetWithTTL(string(cmd.Key), nil, time.Duration(secs)*time.Second)
+		if err := s.SetWithTTL(string(cmd.Key), nil, time.Duration(secs)*time.Second); err != nil {
+			return protocol.ErrorResponse("write failed: " + err.Error())
+		}
 		return protocol.OKResponse(nil)
 
 	case protocol.CmdPing:

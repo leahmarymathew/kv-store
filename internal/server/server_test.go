@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,12 +17,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// startTestServer creates a store and server on a random OS-assigned port,
+// newTestWALStore creates a WALStore backed by a temp-dir WAL file and
+// registers ws.Close() as a cleanup so the file handle is released before
+// t.TempDir() tries to remove the directory (required on Windows).
+func newTestWALStore(t *testing.T) *store.WALStore {
+	t.Helper()
+	ws, err := store.NewWALStoreWithRecovery(filepath.Join(t.TempDir(), "test.wal"))
+	require.NoError(t, err)
+	t.Cleanup(func() { ws.Close() })
+	return ws
+}
+
+// startTestServer creates a WALStore and server on a random OS-assigned port,
 // registers Stop via t.Cleanup, and returns both.
 func startTestServer(t *testing.T) (*Server, string) {
 	t.Helper()
-	s := store.NewStore()
-	srv := NewServer(Config{}, s)
+	srv := NewServer(Config{}, newTestWALStore(t))
 	require.NoError(t, srv.Start())
 	addr := srv.listener.Addr().String()
 	t.Cleanup(srv.Stop)
@@ -110,8 +121,7 @@ func readResponseRaw(conn net.Conn) (byte, []byte, error) {
 
 func TestServerStartStop(t *testing.T) {
 	t.Parallel()
-	s := store.NewStore()
-	srv := NewServer(Config{}, s)
+	srv := NewServer(Config{}, newTestWALStore(t))
 	require.NoError(t, srv.Start())
 	addr := srv.listener.Addr().String()
 
@@ -188,8 +198,8 @@ func TestDeleteFlow(t *testing.T) {
 
 func TestConcurrentClients(t *testing.T) {
 	t.Parallel()
-	s := store.NewStore()
-	srv := NewServer(Config{MaxConns: 200}, s)
+	ws := newTestWALStore(t)
+	srv := NewServer(Config{MaxConns: 200}, ws)
 	require.NoError(t, srv.Start())
 	addr := srv.listener.Addr().String()
 	defer srv.Stop()
@@ -241,13 +251,12 @@ func TestConcurrentClients(t *testing.T) {
 
 	wg.Wait()
 	assert.Equal(t, int64(0), atomic.LoadInt64(&errCount), "expected no errors across concurrent clients")
-	assert.Equal(t, 1000, s.Len(), "expected 1000 keys in store")
+	assert.Equal(t, 1000, ws.Len(), "expected 1000 keys in store")
 }
 
 func TestConnectionLimit(t *testing.T) {
 	t.Parallel()
-	s := store.NewStore()
-	srv := NewServer(Config{MaxConns: 5}, s)
+	srv := NewServer(Config{MaxConns: 5}, newTestWALStore(t))
 	require.NoError(t, srv.Start())
 	addr := srv.listener.Addr().String()
 	defer srv.Stop()

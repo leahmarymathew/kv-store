@@ -26,7 +26,7 @@ type Config struct {
 
 type Server struct {
 	config     Config
-	store      *store.Store
+	store      *store.WALStore
 	listener   net.Listener
 	wg         sync.WaitGroup
 	sem        chan struct{}
@@ -35,7 +35,7 @@ type Server struct {
 	acceptDone chan struct{} // closed when acceptLoop exits
 }
 
-func NewServer(cfg Config, s *store.Store) *Server {
+func NewServer(cfg Config, s *store.WALStore) *Server {
 	if cfg.MaxConns <= 0 {
 		cfg.MaxConns = 1000
 	}
