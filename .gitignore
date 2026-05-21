@@ -1,5 +1,16 @@
-*.test
-bench_results/
-*.log
-wal_data/
+# Binaries
 *.exe
+server
+client
+bench
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.html
+
+# Runtime data
+*.log
+*.txt
+wal_data/
+bench_results/

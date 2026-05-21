@@ -17,7 +17,15 @@
       "PowerShell(Write-Host \"=== 50 clients, mixed ===\" ; .\\\\bench.exe -clients 50 -requests 50000 -operation mixed)",
       "PowerShell(Write-Host \"=== 100 clients, mixed ===\" ; .\\\\bench.exe -clients 100 -requests 100000 -operation mixed)",
       "PowerShell(Write-Host \"=== 200 clients, GET heavy ===\" ; .\\\\bench.exe -clients 200 -requests 200000 -operation get)",
-      "PowerShell(go version *)"
+      "PowerShell(go version *)",
+      "PowerShell(.\\\\bench.exe -clients 200 -requests 50000 -operation mixed)",
+      "Bash(./server.exe -port 7379 -wal-path wal.log)",
+      "Bash(echo \"exit_code: $?\")",
+      "Bash(./client.exe)",
+      "Bash(pkill -f \"server.exe\")",
+      "Bash(git add *)",
+      "Bash(git rm *)",
+      "Bash(git commit *)"
     ]
   }
 }
