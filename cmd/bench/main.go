@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,7 +25,14 @@ func main() {
 	payloadSize := flag.Int("payload-size", 64, "value size in bytes")
 	operation := flag.String("operation", "mixed", "operation type: get, set, or mixed")
 	warmup := flag.Int("warmup", 1000, "warmup requests before measuring")
+	clusterAddrs := flag.String("cluster-addrs", "", "comma-separated addresses for cluster benchmark e.g. localhost:7379,localhost:7381,localhost:7382")
 	flag.Parse()
+
+	if *clusterAddrs != "" {
+		addrs := strings.Split(*clusterAddrs, ",")
+		runClusterBenchmark(addrs, *clients, *requests, *payloadSize)
+		return
+	}
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 	value := bytes.Repeat([]byte("x"), *payloadSize)
@@ -150,6 +158,170 @@ func main() {
 	fmt.Printf("p999:   %.2fms\n", ms(pct(0.999)))
 	fmt.Printf("max:    %.2fms\n", ms(all[n-1]))
 	fmt.Printf("===========================================\n")
+}
+
+func runClusterBenchmark(addrs []string, numClients, numRequests, payloadSize int) {
+	if len(addrs) == 0 {
+		fmt.Fprintln(os.Stderr, "no cluster addresses provided")
+		os.Exit(1)
+	}
+	primaryAddr := addrs[0]
+	replicaAddrs := addrs[1:]
+	if len(replicaAddrs) == 0 {
+		replicaAddrs = addrs // if only one addr, read from it too
+	}
+	value := bytes.Repeat([]byte("x"), payloadSize)
+	perClient := numRequests / numClients
+
+	// --- Write benchmark (all writes to primary) ---
+	writeResults := make(chan []time.Duration, numClients)
+	var wg sync.WaitGroup
+	writeStart := time.Now()
+
+	for c := 0; c < numClients; c++ {
+		wg.Add(1)
+		c := c
+		go func() {
+			defer wg.Done()
+			conn, err := net.Dial("tcp", primaryAddr)
+			if err != nil {
+				writeResults <- nil
+				return
+			}
+			defer conn.Close()
+
+			lats := make([]time.Duration, 0, perClient)
+			for i := 0; i < perClient; i++ {
+				key := []byte(fmt.Sprintf("wkey:%d:%d", c, i))
+				t := time.Now()
+				if err := sendCommand(conn, protocol.CmdSet, key, value); err != nil {
+					break
+				}
+				if _, _, err := readResponse(conn); err != nil {
+					break
+				}
+				lats = append(lats, time.Since(t))
+			}
+			writeResults <- lats
+		}()
+	}
+	wg.Wait()
+	writeDuration := time.Since(writeStart)
+	close(writeResults)
+
+	var writeAll []time.Duration
+	for l := range writeResults {
+		writeAll = append(writeAll, l...)
+	}
+
+	// --- Read benchmark (round-robin across all addresses) ---
+	readResults := make(chan []time.Duration, numClients)
+	readStart := time.Now()
+
+	for c := 0; c < numClients; c++ {
+		wg.Add(1)
+		c := c
+		go func() {
+			defer wg.Done()
+			addr := replicaAddrs[c%len(replicaAddrs)]
+			conn, err := net.Dial("tcp", addr)
+			if err != nil {
+				readResults <- nil
+				return
+			}
+			defer conn.Close()
+
+			lats := make([]time.Duration, 0, perClient)
+			for i := 0; i < perClient; i++ {
+				key := []byte(fmt.Sprintf("wkey:%d:%d", c, i))
+				t := time.Now()
+				if err := sendCommand(conn, protocol.CmdGet, key, nil); err != nil {
+					break
+				}
+				if _, _, err := readResponse(conn); err != nil {
+					break
+				}
+				lats = append(lats, time.Since(t))
+			}
+			readResults <- lats
+		}()
+	}
+	wg.Wait()
+	readDuration := time.Since(readStart)
+	close(readResults)
+
+	var readAll []time.Duration
+	for l := range readResults {
+		readAll = append(readAll, l...)
+	}
+
+	// --- Replication lag measurement (50 samples) ---
+	lagSamples := 50
+	var lagTotals []time.Duration
+
+	lagPrimary, err := net.Dial("tcp", primaryAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lag: connect to primary failed: %v\n", err)
+	} else {
+		defer lagPrimary.Close()
+		for i := 0; i < lagSamples; i++ {
+			replicaAddr := replicaAddrs[i%len(replicaAddrs)]
+			lagReplica, err := net.Dial("tcp", replicaAddr)
+			if err != nil {
+				continue
+			}
+
+			key := []byte(fmt.Sprintf("lagkey:%d", i))
+			writeTime := time.Now()
+			sendCommand(lagPrimary, protocol.CmdSet, key, value)
+			readResponse(lagPrimary)
+
+			// Poll replica until the key appears or 500ms passes.
+			var lag time.Duration
+			deadline := time.Now().Add(500 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				sendCommand(lagReplica, protocol.CmdGet, key, nil)
+				status, _, _ := readResponse(lagReplica)
+				if status == protocol.StatusOK {
+					lag = time.Since(writeTime)
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if lag == 0 {
+				lag = 500 * time.Millisecond // timed out
+			}
+			lagTotals = append(lagTotals, lag)
+			lagReplica.Close()
+		}
+	}
+
+	// --- Output ---
+	writeThroughput := float64(len(writeAll)) / writeDuration.Seconds()
+	readThroughput := float64(len(readAll)) / readDuration.Seconds()
+
+	var avgLag, maxLag time.Duration
+	if len(lagTotals) > 0 {
+		var sum time.Duration
+		for _, l := range lagTotals {
+			sum += l
+			if l > maxLag {
+				maxLag = l
+			}
+		}
+		avgLag = sum / time.Duration(len(lagTotals))
+	}
+
+	ms := func(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
+
+	fmt.Printf("\n============ CLUSTER BENCHMARK ============\n")
+	fmt.Printf("Primary:           %s\n", primaryAddr)
+	fmt.Printf("Replicas:          %s\n", strings.Join(replicaAddrs, ", "))
+	fmt.Printf("Primary writes:    %.0f ops/sec (%d ops)\n", writeThroughput, len(writeAll))
+	fmt.Printf("Distributed reads: %.0f ops/sec (%d ops)\n", readThroughput, len(readAll))
+	fmt.Printf("Avg replication lag: %.2fms\n", ms(avgLag))
+	fmt.Printf("Max replication lag: %.2fms\n", ms(maxLag))
+	fmt.Printf("==========================================\n")
 }
 
 func sendCommand(conn net.Conn, cmdType byte, key, value []byte) error {
