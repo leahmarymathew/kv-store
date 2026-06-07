@@ -8,9 +8,35 @@ bench
 *.test
 *.out
 coverage.html
+*.prof
+*.pprof
 
 # Runtime data
 *.log
 *.txt
 wal_data/
 bench_results/
+data/
+node_data/
+tmp/
+
+# Cluster node storage
+node*/data/
+*.pid
+
+# Go
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
