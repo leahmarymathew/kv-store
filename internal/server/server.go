@@ -7,9 +7,15 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	"github.com/leahmarymathew/kv-store/internal/store"
 )
+
+// StoreBackend is the minimal interface the server requires from a storage layer.
+type StoreBackend interface {
+	Get(key string) ([]byte, bool)
+	Set(key string, value []byte) error
+	SetWithTTL(key string, value []byte, ttl time.Duration) error
+	Delete(key string) (bool, error)
+}
 
 type DeadlineConfig struct {
 	ReadTimeout  time.Duration
@@ -22,11 +28,13 @@ type Config struct {
 	Port      int
 	MaxConns  int
 	Deadlines DeadlineConfig
+	ReadOnly  bool // if true, write commands return "write refused: node is replica"
 }
 
 type Server struct {
 	config     Config
-	store      *store.WALStore
+	store      StoreBackend
+	readOnly   bool
 	listener   net.Listener
 	wg         sync.WaitGroup
 	sem        chan struct{}
@@ -35,7 +43,7 @@ type Server struct {
 	acceptDone chan struct{} // closed when acceptLoop exits
 }
 
-func NewServer(cfg Config, s *store.WALStore) *Server {
+func NewServer(cfg Config, s StoreBackend) *Server {
 	if cfg.MaxConns <= 0 {
 		cfg.MaxConns = 1000
 	}
@@ -52,11 +60,19 @@ func NewServer(cfg Config, s *store.WALStore) *Server {
 	return &Server{
 		config:     cfg,
 		store:      s,
+		readOnly:   cfg.ReadOnly,
 		sem:        make(chan struct{}, cfg.MaxConns),
 		ctx:        ctx,
 		cancel:     cancel,
 		acceptDone: make(chan struct{}),
 	}
+}
+
+func (srv *Server) Addr() string {
+	if srv.listener == nil {
+		return ""
+	}
+	return srv.listener.Addr().String()
 }
 
 func (srv *Server) Start() error {
@@ -93,7 +109,7 @@ func (srv *Server) acceptLoop() {
 			continue
 		}
 		srv.wg.Add(1)
-		go handleConnection(srv.ctx, conn, srv.store, &srv.wg, srv.sem, srv.config.Deadlines)
+		go handleConnection(srv.ctx, conn, srv.store, srv.readOnly, &srv.wg, srv.sem, srv.config.Deadlines)
 	}
 }
 

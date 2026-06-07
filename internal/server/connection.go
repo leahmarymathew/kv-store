@@ -13,10 +13,9 @@ import (
 	"time"
 
 	"github.com/leahmarymathew/kv-store/internal/protocol"
-	"github.com/leahmarymathew/kv-store/internal/store"
 )
 
-func handleConnection(ctx context.Context, conn net.Conn, s *store.WALStore, wg *sync.WaitGroup, sem chan struct{}, cfg DeadlineConfig) {
+func handleConnection(ctx context.Context, conn net.Conn, s StoreBackend, readOnly bool, wg *sync.WaitGroup, sem chan struct{}, cfg DeadlineConfig) {
 	defer func() { <-sem }()
 	defer conn.Close()
 	defer wg.Done()
@@ -43,7 +42,7 @@ func handleConnection(ctx context.Context, conn net.Conn, s *store.WALStore, wg 
 			return
 		}
 
-		resp := dispatch(cmd, s)
+		resp := dispatch(cmd, s, readOnly)
 
 		conn.SetWriteDeadline(time.Now().Add(cfg.WriteTimeout))
 		if err := serializer.Write(resp); err != nil {
@@ -67,7 +66,7 @@ func handleConnection(ctx context.Context, conn net.Conn, s *store.WALStore, wg 
 	}
 }
 
-func dispatch(cmd *protocol.Command, s *store.WALStore) *protocol.Response {
+func dispatch(cmd *protocol.Command, s StoreBackend, readOnly bool) *protocol.Response {
 	switch cmd.Type {
 	case protocol.CmdGet:
 		val, ok := s.Get(string(cmd.Key))
@@ -77,12 +76,18 @@ func dispatch(cmd *protocol.Command, s *store.WALStore) *protocol.Response {
 		return protocol.OKResponse(val)
 
 	case protocol.CmdSet:
+		if readOnly {
+			return protocol.ErrorResponse("write refused: node is replica")
+		}
 		if err := s.Set(string(cmd.Key), cmd.Value); err != nil {
 			return protocol.ErrorResponse("write failed: " + err.Error())
 		}
 		return protocol.OKResponse(nil)
 
 	case protocol.CmdDelete:
+		if readOnly {
+			return protocol.ErrorResponse("write refused: node is replica")
+		}
 		found, err := s.Delete(string(cmd.Key))
 		if err != nil {
 			return protocol.ErrorResponse("write failed: " + err.Error())
@@ -93,6 +98,9 @@ func dispatch(cmd *protocol.Command, s *store.WALStore) *protocol.Response {
 		return protocol.NotFoundResponse()
 
 	case protocol.CmdTTL:
+		if readOnly {
+			return protocol.ErrorResponse("write refused: node is replica")
+		}
 		if len(cmd.Value) != 8 {
 			return protocol.ErrorResponse(fmt.Sprintf("TTL value must be 8 bytes, got %d", len(cmd.Value)))
 		}

@@ -25,7 +25,12 @@
       "Bash(pkill -f \"server.exe\")",
       "Bash(git add *)",
       "Bash(git rm *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(git filter-branch *)",
+      "Bash(git stash *)",
+      "Bash(FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --msg-filter 'sed \"/Co-Authored-By: Claude/d\" | perl -0pe \"s/\\\\n+$/\\\\n/\"' -- 9063325^..HEAD)",
+      "Bash(git push *)",
+      "Bash(GIT_AUTHOR_DATE=\"2026-05-24T10:00:00\" GIT_COMMITTER_DATE=\"2026-05-24T10:00:00\" git commit *)"
     ]
   }
 }
